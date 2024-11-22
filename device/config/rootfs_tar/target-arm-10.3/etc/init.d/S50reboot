@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: GPL-2.0
+# (C) Copyright 2019 frank <frank@allwinnertech.com>
+# reboot script by using rtc register
+#   HOLD: wait time
+#   MAGIC: reboot magic number
+
+HOLD=18
+
+MAGIC=0x19961112
+DEFAULT_REG=0x07000108
+WRITE_PATH=/sys/class/sunxi_dump/write
+DUMP_PATH=/sys/class/sunxi_dump/dump
+
+PLAT=`cat proc/cpuinfo | grep -Eo "sun[A-Za-z0-9]*"`
+case $PLAT in
+  sun8iw11)
+	REG=0x01c20508
+	;;
+  *)
+	REG=$DEFAULT_REG
+	;;
+esac
+VALUE=`echo $REG > $DUMP_PATH;
+       cat $DUMP_PATH`
+
+############################################################
+
+case $# in
+  1)
+	case $1 in
+	  start)
+		let MAGIC=$MAGIC
+		let VALUE=$VALUE
+		if [ $MAGIC -ne $VALUE ]; then
+			exit
+		fi
+		printf "Press [c] to cancel reboot:\n\n\n"
+		for a in `seq $HOLD -1 1`; do
+			printf "\rCountdown:%d " $a
+			read -t 1 -n 1 input
+			if [ "$input" == 'c' ]; then
+				printf "\n"
+				echo $REG 0x0 > $WRITE_PATH
+				exit
+			fi
+		done
+		reboot -f
+		;;
+	  -r)
+		echo $REG $MAGIC > $WRITE_PATH
+		reboot -f
+		;;
+	  *)
+		printf "Usage: -r set reboot magic and reboot\n"
+		;;
+	esac
+	;;
+  *)	printf "Usage: -r set reboot magic and reboot\n" ;;
+esac

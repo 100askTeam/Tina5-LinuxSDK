@@ -1,0 +1,5 @@
+NAME=Buildroot
+VERSION=-g0f467c29-dirty
+ID=buildroot
+VERSION_ID=2022.05
+PRETTY_NAME="Buildroot 2022.05"

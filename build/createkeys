@@ -1,0 +1,326 @@
+#!/bin/bash
+#
+# pack/pack
+# (c) Copyright 2013
+# Allwinner Technology Co., Ltd. <www.allwinnertech.com>
+# flord wang <wangflord@allwinnertech.com>
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+
+LOCAL_DIR=$(cd $(dirname $0) && pwd)
+TOP_DIR=$(cd $LOCAL_DIR/.. && pwd)
+TOOLS_DIR=$TOP_DIR/tools/pack/pctools/linux/openssl
+SELECT_IC=
+
+export PATH=$TOOLS_DIR:$PATH
+
+function pack_error()
+{
+	echo -e "\033[47;31mERROR: $*\033[0m"
+}
+
+function pack_info()
+{
+	echo -e "\033[0;31;1mINFO: $*\033[0m"
+}
+
+function show_help()
+{
+	echo "build.sh - this script is used to create all keys defined in the dragon_toc.cfg"
+	echo "OPTIONS"
+	echo "-h            Display help message"
+	echo "-i [ic_type]  IC type, e.g. a50,a64..."
+	echo "-f            Force create new key"
+}
+
+function build_select_ic()
+{
+	[ -n "$SELECT_IC" ] && return 0
+	local count=0
+	local defidx=0
+	local defval=""
+
+	if [ -f $TOP_DIR/.buildconfig ]; then
+		defval=$(awk -F= '/^export LICHEE_IC=/{print $2}' $TOP_DIR/.buildconfig)
+	fi
+
+	printf "All valid Sunxi ic:\n"
+	for ic in $( find $TOP_DIR/device/config/chips/ -mindepth 1 -maxdepth 1 -type d |sort); do
+		ics[$count]=`basename $ic`
+		printf "%4d. ${ics[$count]}\n" $count
+		[ "x$defval" == "x${ics[$count]}" ] && defidx=$count
+		let count=$count+1
+	done
+
+	while true; do
+		read -p "Please select a ic[${ics[$defidx]}]: "
+		[ -z "$REPLY" ] && REPLY=$defidx
+		RES=`expr match $REPLY "[0-9][0-9]*$"`
+		if [ "$RES" -le 0 ]; then
+			echo "please use index number"
+			continue
+		fi
+		if [ "$REPLY" -ge $count ]; then
+			echo "too big"
+			continue
+		fi
+		if [ "$REPLY" -lt "0" ]; then
+			echo "too small"
+			continue
+		fi
+		break
+	done
+
+	SELECT_IC=${ics[$REPLY]}
+}
+
+function generate_softhsm_keys()
+{
+	local dragon_toc_cfg=$1
+	local keydir=$2
+
+	SOFTHSM_TOOLS_DIR=$TOP_DIR/tools/pack/pctools/linux/softhsm
+	export LD_LIBRARY_PATH=${SOFTHSM_TOOLS_DIR}/lib:${SOFTHSM_TOOLS_DIR}/lib/softhsm:${LIB_LIBRARY_PATH}
+	export PATH=${SOFTHSM_TOOLS_DIR}/bin:$PATH
+
+	#####################
+	# Setup SoftHSM ENV #
+	#####################
+	local softhsm_token=.token
+	local softhsm_cfg=softhsm2.cfg
+	local modules=${SOFTHSM_TOOLS_DIR}/lib/softhsm/libsofthsm2.so
+	local softhsm_token_label=awkeys
+	local pin=1234
+	local sopin=12345678
+
+	rm -rf $keydir
+	mkdir -p $keydir/$softhsm_token
+	touch $keydir/$softhsm_cfg
+	echo "# SoftHSM v2 configuration file" >> $keydir/$softhsm_cfg
+	echo "" >> $keydir/$softhsm_cfg
+	echo "directories.tokendir = $keydir/$softhsm_token" >> $keydir/$softhsm_cfg
+	echo "objectstore.backend = file" >> $keydir/$softhsm_cfg
+	echo "log.level = INFO" >> $keydir/$softhsm_cfg
+	echo "slots.removable = false" >> $keydir/$softhsm_cfg
+
+	export SOFTHSM2_CONF=$keydir/$softhsm_cfg
+
+	# init an token as the default slot
+	softhsm2-util --module ${modules} --init-token --label ${softhsm_token_label} --free --pin ${pin} --so-pin ${sopin}
+	if [ $? -ne 0 ]; then
+		pack_error "softhsm init token error"
+		exit 1
+	fi
+
+	# show slot info
+	# softhsm2-util --module ${MODULES} --show-slot
+
+	#########################
+	# Generate SoftHSM KEYS #
+	#########################
+	local key_lists=$(sed -n '/\[key_toc0\]/,/\[rollback_ver\]/p' $dragon_toc_cfg | grep -v -E '\[|;|^[ \t]*$')
+	local key_toc0=$(awk -F'=' '/^[^;[]/ && $1 == "key_toc0" {gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2}' $dragon_toc_cfg)
+	local key_toc1=$(awk -F'=' '/^[^;[]/ && $1 == "key_toc1" {gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2}' $dragon_toc_cfg)
+	for key_list in $key_lists; do
+		local item_name=$(echo $key_list | awk -F = '{print $1}')
+		local key_name=$(echo $key_list | awk -F = '{print $2}')
+		local id=$(echo "$key_name" | md5sum | awk '{print $1}')
+
+		# Generate key pair
+		if [ -f ${keydir}/${key_name}.der.pub ]; then
+			echo "${key_name} already exist, goto the next key"
+			continue
+		fi
+
+		if [ "x$item_name" == "xsboot" ]; then
+			if [ "x$key_toc0" == "xrsa2048" ]; then
+				key_type="RSA:2048"
+				alg_type=rsa
+			elif [ "x$key_toc0" == "xrsa4096" ]; then
+				key_type="RSA:4096"
+				alg_type=rsa
+			elif [ "x$key_toc0" == "xecc_prime256v1" ]; then
+				key_type="EC:prime256v1"
+				alg_type=ec
+			elif [ "x$key_toc0" == "xecc_secp384r1" ]; then
+				key_type="EC:secp384r1"
+				alg_type=ec
+			else
+				echo "Unsupported key ${key_toc0} type"
+				exit 1
+			fi
+		else
+			if [ "x$key_toc1" == "xrsa2048" ]; then
+				key_type="RSA:2048"
+				alg_type=rsa
+			elif [ "x$key_toc1" == "xrsa4096" ]; then
+				key_type="RSA:4096"
+				alg_type=rsa
+			elif [ "x$key_toc1" == "xecc_prime256v1" ]; then
+				key_type="EC:prime256v1"
+				alg_type=ec
+			elif [ "x$key_toc1" == "xecc_secp384r1" ]; then
+				key_type="EC:secp384r1"
+				alg_type=ec
+			else
+				echo "Unsupported key type"
+				exit 1
+			fi
+		fi
+
+		pkcs11-tool --keypairgen --key-type ${key_type} --login --pin ${pin} --module ${modules} --id ${id}
+		if [ $? -ne 0 ]; then
+			pack_error "softhsm keypairgen error"
+			exit 1
+		fi
+
+		# Extract public key from the card
+		pkcs11-tool --read-object --id ${id} --type pubkey --output-file ${keydir}/${key_name}.der.pub --module ${modules}
+		if [ $? -ne 0 ]; then
+			pack_error "softhsm read pubkey error"
+			exit 1
+		fi
+
+		# convert pubkey format der to pem
+		openssl ${alg_type} -inform DER -outform PEM -in ${keydir}/${key_name}.der.pub -pubin > ${keydir}/${key_name}.pem.pub
+		if [ $? -ne 0 ]; then
+			pack_error "softhsm convert der to pem error"
+			exit 1
+		fi
+
+		# generate rotpk
+		if [ "x$item_name" == "xsboot" ]; then
+			dragon_securetool gen-pubkey-hash --pubkey ${keydir}/${key_name}.pem.pub --out ${keydir}/rotpk.bin
+		#	dragon_securetool gen-pubkey-hash --cfg ${dragon_toc_cfg} --in ${keydir}/${key_name}.pem.pub --out ${keydir}/rotpk.bin
+			if [ $? -ne 0 ]; then
+				pack_error "generate rotpk error"
+				exit 1
+			fi
+		fi
+	done
+
+	echo "================>"
+	pkcs11-tool --module ${modules} -L -l --pin ${pin} -O
+}
+
+function readcfg()
+{
+	local fid=$1
+	local section=$2
+	local option=$3
+
+	test ! -f $fid && echo "file not exits:$fid" && exit 1
+	if [ $# -eq 3 ] ; then
+		local src=$(cat $fid | awk '/\['$section'\]/{f=1;next} /\[*\]/{f=0} f' |
+		grep ^$option |
+		grep '='     |
+		cut -d'=' -f2|
+		cut -d'#' -f1|
+		cut -d';' -f1|
+		awk '{gsub(/^\s+|\s+$/, "");print}')
+		echo -n $src
+		test ${#src} -eq 0 && return 1 || return 0
+	else
+		echo "the input parameters should be 3"
+		exit 1
+	fi
+}
+
+function createkeys()
+{
+	printf "ready to create keys\n"
+
+	find $TOP_DIR/device/config/chips/ -mindepth 1 -maxdepth 1 -type d | grep -w "$SELECT_IC"
+	if [ $? -ne 0 ]; then
+		pack_error "plat: $SELECT_IC is not exist"
+		exit 1
+	fi
+
+	pack_info "SELECT_IC is $SELECT_IC\n"
+
+	local toc_cfg_special=$TOP_DIR/device/config/chips/$SELECT_IC/configs/default/dragon_toc.cfg
+	local toc_cfg_default=$TOP_DIR/device/config/common/sign_config/dragon_toc.cfg
+	local toc_cfg=$toc_cfg_special
+	local key_out=$TOP_DIR/out/$SELECT_IC/common/keys
+
+	if [ ! -d $key_out ]; then
+		mkdir -p $key_out
+	fi
+
+	if [ -n "`find $key_out -type f 2> /dev/null`" ]; then
+		if [ "xtrue" != "x$FORCE_CREATE" ]; then
+			pack_info "already has key, use -f to force overwrite new key.\n"
+			exit 0
+		fi
+	fi
+
+	pack_info "creating new key\n"
+
+	if [ ! -f $toc_cfg ]; then
+		toc_cfg=$toc_cfg_default
+	fi
+
+	if [ ! -f $toc_cfg ]; then
+		pack_error "dragon toc config file is not exist"
+		exit 1
+	fi
+
+	#readcfg determines whether the cfg file is legacy or new
+	readcfg ${toc_cfg} key_para key > /dev/null
+	if [ $? -ne 0 ]; then
+		pack_info "Use dragonsecboot"
+		dragonsecboot -key $toc_cfg $key_out
+		if [ $? -ne 0 ]; then
+			pack_error "dragon key run error"
+			exit 1
+		fi
+	else
+		rm -rf $key_out
+		mkdir $key_out
+		if [ "xtrue" != "x$SOFTHSM_FLAG" ]; then
+			pack_info "Use dragon_securetool"
+			dragon_securetool genkey --cfg $toc_cfg --outpath $key_out
+			if [ $? -ne 0 ]; then
+				pack_error "dragon key run error"
+				exit 1
+			fi
+		else
+			pack_info "Use softhsm to generate keys"
+			generate_softhsm_keys $toc_cfg $key_out
+			if [ $? -ne 0 ]; then
+				pack_error "softhsm generate keys error"
+				exit 1
+			fi
+		fi
+	fi
+
+	if [ "x$toc_cfg" == "x$toc_cfg_special" ]; then
+		pack_info "use platform[$SELECT_IC] toc config to create keys\n"
+	else
+		pack_info "use default toc config to create keys\n"
+	fi
+}
+
+while getopts fshi: OPTION; do
+	case $OPTION in
+		i)
+			SELECT_IC=$OPTARG
+			;;
+		f)
+			FORCE_CREATE=true
+			;;
+		s)
+			SOFTHSM_FLAG=true
+			;;
+		*)
+			show_help
+			exit 0
+			;;
+	esac
+done
+
+build_select_ic
+createkeys

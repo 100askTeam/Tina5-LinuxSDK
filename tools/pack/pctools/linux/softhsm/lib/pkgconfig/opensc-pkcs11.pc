@@ -1,0 +1,9 @@
+prefix=/home1/xulu/aw-pkcs11/tools/install
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: OpenSC smartcard framework
+Description: OpenSC PKCS#11 module
+Version: 0.23.0
+Libs: -L${libdir} -lopensc-pkcs11

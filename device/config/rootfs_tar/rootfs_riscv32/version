@@ -1,0 +1,4 @@
+arch: riscv32
+type: rootfs
+version: 1.0.0
+toolchain: nds32le-linux-glibc-v5d

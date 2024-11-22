@@ -1,0 +1,239 @@
+#!/bin/sh
+#
+# Start the preinit
+#
+
+. /etc/partition_op.sh
+
+roroot=/squashfs
+rwroot=/overlay
+mtdp=/dev/by-name/rootfs_data
+CONSOLE=/dev/console
+
+#//-----------------------------------------------------------------------------
+#// switch
+#//-----------------------------------------------------------------------------
+
+early_setup() {
+
+	[ ! -e "/proc/mounts" ] && {
+		/bin/mount -t proc proc /proc
+	}
+
+	[ -z "$(grep '\s\/dev\s' /proc/mounts)" ] && {
+		/bin/mount -t devtmpfs none /dev
+	}
+
+	[ -z "$(grep '\<tmpfs\>' /proc/mounts)" ] && {
+		/bin/mount -t tmpfs none /tmp
+	}
+
+	[ -z "$(grep '\<sysfs\>' /proc/mounts)" ] && {
+		/bin/mount -t sysfs sysfs /sys
+	}
+}
+
+jffs2_check() {
+	local mtdpt=$1
+	local magic=""
+
+	[ ! -b "$mtdpt" ] && return 1
+
+	[ -z "$(grep '\<jffs2\>' /proc/filesystems)" ] && {
+		echo "[preinit]: Not support jffs2 filesystem....." >$CONSOLE
+		return 1
+	}
+
+	magic="$(hexdump $mtdpt -n 2 -e '2/1 "%02x"')"
+
+	#
+	# jffs filesystem magic number
+	[ "$magic" != "1985" ] && [ "$magic" != "8519" ] || {
+		echo "[preinit]: $mtdpt is not jffs2 filesystm" > $CONSOLE
+		return 1
+	}
+
+	#echo -e '\xff\xff\xff\xff\xff\xff\xff\xff' | dd of=$mtdpt bs=1 count=8 conv=notrunc
+}
+
+switch_extroot() { #<new_root>  <old_root>
+	[ -e $2 ] && mount -o noatime,move $2 $1/$2
+	
+	mount -o move /proc $1/proc
+
+	pivot_root $1 $1/$2 && {
+		#mount -o move $1/$2 $2 2>&-
+		mount -o move $2/sys /sys 2>&-
+        mount -o move $2/tmp /tmp
+		mount -o move $2/dev /dev
+		return 0;
+	}
+	return 1
+}
+
+uionfs() { #<low> <overlay> <mountpoint> 
+	local lo=$1
+	local up=$2/upperdir
+	local wk=$2/workdir
+	local mt=$3
+
+	[ ! -e $up ] && mkdir -p $up
+	[ ! -e $wk ] && mkdir -p $wk
+	
+
+	mount -t overlay -o lowerdir=$lo,upperdir=$up,workdir=$wk overlay $mt || return 1
+
+	return 0
+}
+
+do_ramswitch() { #<ro_root>
+	mkdir -p /tmp/root
+	mkdir -p /tmp/overlay
+
+	mount -t tmpfs -o noatime,mode=0755 root /tmp/root
+	mount -t tmpfs none /tmp/overlay
+
+	uionfs "/" "/tmp/overlay" "/mnt"
+	mount -o noatime,move /tmp /mnt/tmp
+
+	switch_extroot "/mnt" "/tmp/root" && {
+		echo "done" > /tmp/.preinitdone
+	}
+
+	return 0;
+}
+
+auto_mount() { #<dev>  <mountpoint>
+	local _bdev=$1
+	local _mto=$2
+	local btm="/sys/module/block2mtd/parameters/block2mtd"
+	local _match=""
+	local _tmp=""
+
+
+	#
+	# At first, we will try to mount normal filesystem witch rw flags
+	# such as, msdos, vfat, ext2/3/4. If it is failed, try to other nodev filesystem
+	#
+	mount -t auto -o rw ${_bdev} ${_mto} || {
+
+		#
+		# Cut the strings "mtdblock"
+		#
+		_tmp="${_bdev##*/}"
+		_match="${_tmp:0:8}"
+
+		#
+		# If <dev> is not MTD, we need to use block2mtd.
+		#
+		if [ ! -b "${_bdev}" ]; then
+			return 1;
+		fi
+
+		if [ -e "${btm}" -a "x${_match}x" != "xmtdblockx"  ]; then
+
+			#
+			# Change blkdev to mtdblockx
+			#
+			echo "${_bdev}" >${btm}
+
+			while read _l; do
+				_match=${_l##*block2mtd: };
+				if [ "x${_match%%\"*}x" == "x${_bdev}x" ]; then
+					_tmp=${_l%%:*};
+					_bdev=${_tmp/mtd/\/dev\/mtdblock};
+					if [ "x${_bdev}x" != "xx" ]; then
+						echo "[preinit]: Bind to ${_bdev}" >$CONSOLE
+						break;
+					fi
+				fi
+			done </proc/mtd;
+
+		fi
+
+		mount -t jffs2 ${_bdev} ${_mto} || return 1
+	}
+
+	return 0
+}
+
+do_normalswitch() { #<rw_root> <ro_root> <blkdev>
+
+	local rw=$1
+	local ro=$2
+
+	[ ! -e  "$1" ] && {
+		mkdir -p /tmp/$1;
+		rw="/tmp/$1";
+	}
+
+	[ ! -e  "$2" ] && {
+		mkdir -p /tmp/$2;
+		ro="/tmp/$2";
+	}
+
+	mount -o bind / $ro
+	auto_mount $3 $rw || return 1
+
+	echo "[preinit]: Uion filesystem........" > $CONSOLE
+	uionfs "/" "$rw" "/mnt" || return 1
+	if [ $rw = "/tmp/$1" -o $ro = "/tmp/$2" ]; then
+		mount -o noatime,move /tmp /mnt/tmp
+	fi
+
+	switch_extroot "/mnt" $ro && {
+        mount -n -o noatime,move $ro/$rw $rw
+		echo "done" > /tmp/.preinitdone
+	}
+
+	return 0;
+}
+
+get_overlay_part() { #<partitions strings>
+	local parts=$1;
+	local _m1="";
+	local _m2="";
+	local mblk="";
+
+	## partitions is from cmdline, format: paritions=<name1>@<partname>:<name2>@<partname>
+	if [ -n "${parts}" ]; then
+		_m1="${parts##*rootfs_data@}"
+		_m2="${_m1%%:*}"
+		if [ -n "$_m2" ]; then
+			mblk="/dev/$_m2"
+			echo "[preinit]: Got overlay partitions is ${mblk}" >$CONSOLE
+		fi
+	fi
+	echo "${mblk}"
+}
+
+#//-----------------------------------------------------------------------------
+#// begin to execute script
+#//-----------------------------------------------------------------------------
+early_setup
+
+do_device_node_switch
+do_format_filesystem /dev/by-name/rootfs_data jffs2
+
+echo '[preinit]: Early Setuping virtual filesystem........' >$CONSOLE
+issquash=$(grep '\s\/\s\+squashfs' /proc/mounts)
+
+[ -z "$issquash" ] || {
+	# preinti is already done
+	[ -e "/tmp/.preinitdone" ] && {
+		echo "[preinit]: Already Switeched. Reinit process" >$CONSOLE
+		return 0
+	}
+
+	#mtdp=$(get_overlay_part ${partitions})
+	mtdp=/dev/by-name/rootfs_data
+	#
+	# Successfully, it will not return
+	#
+	if [ "x${mtdp}x" != "xx" ]; then
+		do_normalswitch "$rwroot" "$roroot" "$mtdp" && exec /sbin/init
+	fi
+
+	echo "[preinit]: Can't do normal switch, and do ram switch for wirteable..............." >$CONSOLE
+	do_ramswitch && exec /sbin/init
+}

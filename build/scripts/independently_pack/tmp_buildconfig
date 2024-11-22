@@ -1,0 +1,6 @@
+export LICHEE_TOP_DIR=
+export LICHEE_TOOLS_DIR=tools
+export LICHEE_COMMON_CONFIG_DIR=device/config/common
+export LICHEE_OUT_DIR=out
+export LICHEE_PACK_OUT_DIR=out/pack_out
+export LICHEE_PLAT_OUT=image

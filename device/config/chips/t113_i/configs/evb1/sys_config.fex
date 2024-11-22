@@ -1,0 +1,152 @@
+;sunxi platform application
+;---------------------------------------------------------------------------------------------------------
+; 说明： 脚本中的字符串区分大小写，用户可以修改"="后面的数值，但是不要修改前面的字符串
+; 描述gpio的形式：Port:端口+组内序号<功能分配><内部电阻状态><驱动能力><输出电平状态>
+;---------------------------------------------------------------------------------------------------------
+
+[product]
+version = "100"
+machine = "evb1"
+
+[platform]
+eraseflag   = 0
+debug_mode  = 8
+;----------------------------------------------------------------------------------
+;   system configuration
+;   ?
+;dcdc1_vol							---set dcdc1 voltage,mV,1600-3400,100mV/step
+;dcdc2_vol							---set dcdc2 voltage,mV,600-1540,20mV/step
+;dcdc3_vol							---set dcdc3 voltage,mV,600-1860,20mV/step
+;dcdc4_vol							---set dcdc4 voltage,mV,600-1540,20mV/step
+;dcdc5_vol							---set dcdc5 voltage,mV,1000-2550,50mV/step
+;aldo2_vol							---set aldo2 voltage,mV,700-3300,100mV/step
+;aldo3_vol							---set aldo3 voltage,mV,700-3300,100mV/step
+;----------------------------------------------------------------------------------
+;storage_type   = boot medium, 0-nand, 1-sd, 2-emmc, 3-nor, 4-emmc3, 5-spinand -1(defualt)auto scan
+[target]
+boot_clock   	= 1008
+storage_type    = 5
+nand_use_ubi	= 1
+
+[power_sply]
+dcdc1_vol                  = 3000
+dcdc2_vol                  = 1200
+dcdc3_vol                  = 1200
+dcdc4_vol                  = 1200
+dcdc5_vol                  = 1500
+aldo2_vol                  = 1800
+aldo3_vol                  = 3000
+
+[card_boot]
+logical_start   = 40960
+sprite_gpio0    =
+
+[card0_boot_para]
+card_ctrl       = 0
+card_high_speed = 1
+card_line       = 4
+sdc_d1          = port:PF0<2><1><2><default>
+sdc_d0          = port:PF1<2><1><2><default>
+sdc_clk         = port:PF2<2><1><2><default>
+sdc_cmd         = port:PF3<2><1><2><default>
+sdc_d3          = port:PF4<2><1><2><default>
+sdc_d2          = port:PF5<2><1><2><default>
+bus-width = 4
+cap-sd-highspeed =
+cap-wait-while-busy =
+no-sdio =
+no-mmc =
+sunxi-power-save-mode =
+
+
+[card2_boot_para]
+card_ctrl       = 2
+card_high_speed = 1
+card_line       = 4
+sdc_clk         = port:PC02<3><1><3><default>
+sdc_cmd         = port:PC03<3><1><3><default>
+sdc_d0          = port:PC06<3><1><3><default>
+sdc_d1          = port:PC5<3><1><3><default>
+sdc_d2          = port:PC04<3><1><3><default>
+sdc_d3          = port:PC07<3><1><3><default>
+sdc_tm4_hs200_max_freq = 150
+sdc_tm4_hs400_max_freq = 100
+sdc_ex_dly_used = 2
+;sdc_io_1v8	= 1
+sdc_tm4_win_th = 8
+sdc_dis_host_caps = 0x180
+;sdc_erase	= 2
+;sdc_boot0_sup_1v8 = 1
+;sdc_type	= "tm4"
+
+[jtag_para]
+jtag_enable     = 1
+jtag_ms         = port:PH9<3><default><default><default>
+jtag_ck         = port:PH10<3><default><default><default>
+jtag_do         = port:PH11<3><default><default><default>
+jtag_di         = port:PH12<3><default><default><default>
+
+;*****************************************************************************
+;
+;dram select configuration
+;
+;select_mode	:	dram模式选择,	0:不进行自动识别
+;					1:gpio识别模式(dram_para, dram_para1-15, 共16组有效)
+;					2:gpadc识别模式(dram_para, dram_para1-7, 共8组有效)
+;					3:1个IO+gpadc识别模式(dram_para, dram_para1-15, 共16组有效)。其中IO配置优先级按select_gpio0>select_gpio1>select_gpio2>select_gpio3
+;gpadc_channel	:	选择gpadc通道	有效值(0-3)
+;select_gpio1-4	:	选择gpio pin
+;*****************************************************************************
+
+
+[dram_select_para]
+select_mode	= 0
+gpadc_channel	= 1
+select_gpio0	= port:PB7<0><1><default><default>
+select_gpio1	= port:PB4<0><1><default><default>
+select_gpio2	= port:PH1<0><1><default><default>
+select_gpio3	= port:PH0<0><1><default><default>
+
+
+;*****************************************************************************
+;sdram configuration
+;
+;*****************************************************************************
+[dram_para]
+dram_clk            = 528
+dram_type           = 2
+dram_zq             = 0x07b7bf9
+dram_odt_en         = 0x00
+dram_para1          = 0x000000d2
+dram_para2          = 0x00000000
+dram_mr0            = 0x00000E73
+dram_mr1            = 0x02
+dram_mr2            = 0x0
+dram_mr3            = 0x0
+dram_tpr0           = 0x00471992
+dram_tpr1           = 0x0131A10C
+dram_tpr2           = 0x00057041
+dram_tpr3           = 0xB4787896
+dram_tpr4           = 0x0
+dram_tpr5           = 0x48484848
+dram_tpr6           = 0x48
+dram_tpr7           = 0x1621121e
+dram_tpr8           = 0x0
+dram_tpr9           = 0x0
+dram_tpr10          = 0x00000000
+dram_tpr11          = 0x00030010
+dram_tpr12          = 0x00000035
+dram_tpr13          = 0x34000000
+;----------------------------------------------------------------------------------
+;uart configuration
+;uart_type ---  2 (2 wire), 4 (4 wire), 8 (8 wire, full function)
+;----------------------------------------------------------------------------------
+[uart_para]
+uart_debug_port = 0
+uart_debug_tx   = port:PF02<3><1><default><default>
+uart_debug_rx   = port:PF04<3><1><default><default>
+
+;[secure]
+;dram_region_mbytes       = 80
+;drm_region_mbytes        = 0
+;drm_region_start_mbytes  = 0
